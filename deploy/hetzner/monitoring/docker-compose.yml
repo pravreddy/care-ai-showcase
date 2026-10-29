@@ -1,0 +1,32 @@
+# =============================================================================
+# Monitoring + auto-recovery stack for the Hetzner box.
+#   - uptime-kuma : watches sites, TLS certs, containers, mail ports; alerts you
+#   - autoheal    : auto-restarts any container that reports "unhealthy"
+#
+# Deploy from your laptop:  ./deploy-monitoring.sh
+# Access the dashboard:     ssh -L 3001:localhost:3001 hetzner-prod
+#                           then open http://localhost:3001
+# (Kuma is bound to localhost only, so it's reachable solely over your SSH tunnel
+#  — no public exposure, no extra firewall holes.)
+# =============================================================================
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3001"           # localhost only — reach via SSH tunnel
+    volumes:
+      - ./uptime-kuma-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # so it can watch containers
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: always
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all    # watch every container that has a healthcheck
+      - AUTOHEAL_INTERVAL=30            # check every 30s
+      - AUTOHEAL_START_PERIOD=120       # give a container 2 min to boot before acting
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

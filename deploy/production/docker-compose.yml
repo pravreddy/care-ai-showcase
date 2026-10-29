@@ -1,0 +1,192 @@
+# =============================================================
+# Avyangah Technologies — Production Docker Compose
+# =============================================================
+# ONE FILE to rule them all. Runs on Hetzner CPX32.
+#
+# Services:
+#   - CareAI (FastAPI + React)
+#   - SignSimple (Django + React)
+#   - PostgreSQL (shared, 2 databases)
+#   - Redis (shared, different DB numbers)
+#   - Caddy (auto HTTPS, replaces Nginx)
+#
+# NO Ollama (using Groq API instead)
+# NO Postal (separate server later when port 25 available)
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down
+#
+# First-time setup:
+#   ./setup-hetzner.sh
+# =============================================================
+
+x-restart: &restart
+  restart: unless-stopped
+
+x-healthcheck-pg: &hc-pg
+  test: ["CMD-SHELL", "pg_isready -U careai"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+
+x-healthcheck-redis: &hc-redis
+  test: ["CMD", "redis-cli", "ping"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+
+services:
+
+  # ===========================================
+  # SHARED INFRASTRUCTURE
+  # ===========================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: avyangah-postgres
+    <<: *restart
+    environment:
+      POSTGRES_USER: careai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Create both databases on first run
+      POSTGRES_MULTIPLE_DATABASES: careai,docsign_uk
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
+    healthcheck: *hc-pg
+    networks: [app-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: avyangah-redis
+    <<: *restart
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck: *hc-redis
+    networks: [app-net]
+
+  # ===========================================
+  # CADDY — Auto HTTPS reverse proxy
+  # Replaces Nginx + certbot. Zero SSL config.
+  # ===========================================
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: avyangah-caddy
+    <<: *restart
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [app-net]
+
+  # ===========================================
+  # CARE AI — FastAPI backend
+  # ===========================================
+
+  careai-api:
+    image: ghcr.io/${GITHUB_USER}/careai-api:latest
+    container_name: avyangah-careai-api
+    <<: *restart
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://careai:${POSTGRES_PASSWORD}@postgres:5432/careai
+      - REDIS_URL=redis://redis:6379/0
+      - LLM_PROVIDER=groq
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+    volumes:
+      - careai-logs:/app/logs
+      - careai-data:/app/app/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks: [app-net]
+
+  careai-frontend:
+    image: ghcr.io/${GITHUB_USER}/careai-frontend:latest
+    container_name: avyangah-careai-frontend
+    <<: *restart
+    networks: [app-net]
+
+  # ===========================================
+  # SIGNSIMPLE — Django backend
+  # ===========================================
+
+  signsimple-api:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: avyangah-signsimple-api
+    <<: *restart
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file: .env.signsimple
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=docsign_uk
+      - DB_USER=careai
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - signsimple-media:/app/media
+      - signsimple-static:/app/staticfiles
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [app-net]
+
+  signsimple-celery:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: avyangah-signsimple-celery
+    <<: *restart
+    command: celery -A core worker --loglevel=info --concurrency=2
+    env_file: .env.signsimple
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=docsign_uk
+      - DB_USER=careai
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - signsimple-media:/app/media
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [app-net]
+
+  signsimple-frontend:
+    image: ghcr.io/${GITHUB_USER}/docsign-frontend:latest
+    container_name: avyangah-signsimple-frontend
+    <<: *restart
+    networks: [app-net]
+
+volumes:
+  pg-data:
+  redis-data:
+  caddy-data:
+  caddy-config:
+  careai-logs:
+  careai-data:
+  signsimple-media:
+  signsimple-static:
+
+networks:
+  app-net:
+    driver: bridge

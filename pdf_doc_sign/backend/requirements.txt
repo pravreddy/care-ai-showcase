@@ -1,0 +1,65 @@
+# Django Core
+Django==4.2.30
+djangorestframework==3.15.2
+django-cors-headers==4.6.0
+django-environ==0.11.2
+
+# Database
+psycopg2-binary==2.9.10
+dj-database-url==2.3.0
+
+# Authentication
+djangorestframework-simplejwt==5.5.1  # SECURITY: was 5.4.0 (CVE-2024-22513)
+django-allauth[socialaccount]==65.14.1  # SECURITY: was 65.14.0 (PYSEC-2026-56)
+
+# S3-Compatible Storage (works with Vultr, AWS, MinIO, Backblaze)
+boto3==1.35.84
+django-storages==1.14.4
+
+# PDF Processing & Signing
+pypdf==6.13.3  # SECURITY: replaces PyPDF2 3.0.1 (frozen, unpatched infinite-loop CVE). Drop-in for PdfReader.
+reportlab==4.2.5
+pdfrw==0.4
+Pillow==12.2.0  # SECURITY: was 12.1.1 (CVE-2026-40192/42309/42310/42311 + PYSEC-2026-165)
+python-magic==0.4.27
+
+# AI Detector — file text extraction
+# SECURITY: pdfplumber 0.11.4 -> 0.11.10 pulls pdfminer.six 20260107,
+# clearing CVE-2025-64512 and CVE-2025-70559 in pdfminer.six.
+pdfplumber==0.11.10
+python-docx==1.1.2
+python-pptx==1.0.2
+
+# Cryptography (for document signing)
+cryptography==48.0.1  # SECURITY: was 46.0.7 (GHSA-537c-gmf6-5ccf). Major bump; macOS/manylinux wheels exist.
+
+# Payment Providers
+stripe==11.4.1
+
+# Task Queue
+celery==5.4.0
+redis==5.2.1
+django-celery-beat==2.7.0
+
+# Excel generation
+openpyxl==3.1.5
+
+# Utilities
+python-dotenv==1.2.2  # SECURITY: was 1.0.1 (CVE-2026-28684)
+requests==2.33.0
+urllib3>=1.21.1,<3
+charset-normalizer>=2,<4
+gunicorn==23.0.0
+whitenoise==6.8.2
+
+# Testing
+# NOTE: pytest CVE-2025-71176 (fix 9.0.3) left pinned — pytest-django/asyncio
+# plugins do not yet support pytest 9. Dev-only, low risk.
+pytest==8.3.4
+pytest-django==4.9.0
+pytest-cov==6.0.0
+factory-boy==3.3.1
+responses==0.25.6
+
+# Dev
+django-debug-toolbar==4.4.6

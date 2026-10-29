@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Django
+*.sqlite3
+staticfiles/
+media/
+logs/
+
+# Environment
+.env
+!.env.example
+
+# Sensitive deploy files (keep local only, never push to GitHub)
+deploy/DEPLOY_GUIDE.md
+deploy/.env.docsign
+deploy/active_env.conf
+deploy/active_docsign.conf
+
+# Node
+node_modules/
+frontend/build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

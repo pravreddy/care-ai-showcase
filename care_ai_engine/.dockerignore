@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+*.md
+__pycache__
+*.pyc
+venv/
+.venv/
+tests/
+.DS_Store
+logs/
+data/chromadb/
+data/uploads/
+docker-compose.override.yml

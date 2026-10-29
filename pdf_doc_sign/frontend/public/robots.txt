@@ -1,0 +1,13 @@
+User-agent: *
+Allow: /
+Allow: /free-electronic-signature
+Allow: /ai-checker
+Allow: /register
+Allow: /login
+Allow: /help
+Disallow: /dashboard
+Disallow: /documents
+Disallow: /admin
+Disallow: /api
+
+Sitemap: https://signsimple.co.uk/sitemap.xml

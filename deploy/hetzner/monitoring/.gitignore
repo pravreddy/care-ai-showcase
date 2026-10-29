@@ -1,0 +1,5 @@
+# Uptime Kuma's runtime data (SQLite DB, etc.) — lives on the server, never commit
+uptime-kuma-data/
+.venv/
+__pycache__/
+*.pyc

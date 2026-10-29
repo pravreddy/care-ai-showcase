@@ -1,0 +1,35 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+# version: 2
+# updates:
+#   - package-ecosystem: "" # See documentation for possible values
+#     directory: "/" # Location of package manifests
+#     schedule:
+#       interval: "weekly"
+
+version: 2
+updates:
+  # 🐍 Python/Django Backend
+  - package-ecosystem: "pip"
+    directory: "/pdf_doc_sign/backend"
+    schedule:
+      interval: "weekly"
+      day: "saturday" # Checks are ready for your weekend
+    groups:
+      backend-dependencies:
+        patterns:
+          - "*" # Group all backend updates into one PR
+
+  # 📦 React/NPM Frontend
+  - package-ecosystem: "npm"
+    directory: "/pdf_doc_sign/frontend"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+    groups:
+      frontend-dependencies:
+        patterns:
+          - "*" # Group all 1,300+ frontend updates into one PR

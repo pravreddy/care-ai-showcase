@@ -1,0 +1,98 @@
+name: "Actions storage cleanup"
+
+# WHY THIS EXISTS
+# Every workflow run leaves artifacts and caches behind. Nothing expires them by
+# default, so a repo that runs CI a few times a day quietly accumulates hundreds
+# of artifacts until the account's Actions storage fills up and you end up
+# deleting them by hand (care-ai had ~130 in Aug 2026).
+#
+# Two independent belts, because either alone leaves a gap:
+#   1. `retention-days:` on each upload-artifact step   <- set that in your CI file
+#   2. this job, which sweeps old RUNS (and their artifacts) plus stale caches
+#
+# Drop this file into .github/workflows/ in any repo. No secrets needed —
+# GITHUB_TOKEN with `actions: write` is enough.
+
+on:
+  schedule:
+    - cron: "0 2 * * *"        # daily, 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      keep_days:
+        description: "Keep runs newer than this many days"
+        default: "3"
+      dry_run:
+        description: "List what would be deleted, delete nothing"
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: actions-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep old runs, artifacts and caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          KEEP_DAYS: ${{ github.event.inputs.keep_days || '3' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          CUTOFF="$(date -u -d "${KEEP_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Repo:   $REPO"
+          echo "Cutoff: $CUTOFF  (keeping the last ${KEEP_DAYS} days)"
+          [ "$DRY_RUN" = "true" ] && echo ">>> DRY RUN — nothing will be deleted"
+
+          run_del() {   # run_del <method> <path>
+            if [ "$DRY_RUN" = "true" ]; then echo "    would DELETE $2"; return 0; fi
+            gh api -X "$1" "$2" --silent 2>/dev/null || echo "    (skipped $2)"
+          }
+
+          # 1) EXPIRED ARTIFACTS FIRST -----------------------------------------
+          # An artifact can outlive nothing else, so clear these even on runs we
+          # are keeping. `expired` ones are already dead weight in the UI.
+          echo "--> artifacts older than the cutoff"
+          n=0
+          for id in $(gh api "/repos/$REPO/actions/artifacts" --paginate \
+                        -q ".artifacts[] | select(.created_at < \"$CUTOFF\") | .id"); do
+            run_del DELETE "/repos/$REPO/actions/artifacts/$id"; n=$((n+1))
+          done
+          echo "    $n artifact(s)"
+
+          # 2) OLD RUNS --------------------------------------------------------
+          # Deleting a run removes its logs and any artifacts still attached.
+          # Skip anything still in progress — deleting a live run is rude and
+          # the API refuses it anyway.
+          echo "--> workflow runs older than the cutoff"
+          n=0
+          for id in $(gh api "/repos/$REPO/actions/runs" --paginate \
+                        -q ".workflow_runs[]
+                            | select(.created_at < \"$CUTOFF\")
+                            | select(.status == \"completed\")
+                            | .id"); do
+            run_del DELETE "/repos/$REPO/actions/runs/$id"; n=$((n+1))
+          done
+          echo "    $n run(s)"
+
+          # 3) CACHES ----------------------------------------------------------
+          # GitHub evicts caches at 10GB per repo, but a stale key can sit there
+          # for a week holding a few hundred MB. Drop anything not used recently.
+          # Deleting by ID avoids the URL-encoding trap with keys containing / or =.
+          echo "--> caches not accessed since the cutoff"
+          n=0
+          for id in $(gh api "/repos/$REPO/actions/caches" --paginate \
+                        -q ".actions_caches[] | select(.last_accessed_at < \"$CUTOFF\") | .id" \
+                        2>/dev/null || true); do
+            run_del DELETE "/repos/$REPO/actions/caches/$id"; n=$((n+1))
+          done
+          echo "    $n cache(s)"
+
+          echo "Done. Storage figures in the billing page refresh within a few minutes."

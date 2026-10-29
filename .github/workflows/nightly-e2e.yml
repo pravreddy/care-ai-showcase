@@ -1,0 +1,149 @@
+name: Nightly — AI Detector Calibration
+
+# Runs the AI detector E2E calibration suite against the real LLM
+# (Groq / Gemini) once a night. Kept out of the main deploy pipeline so:
+#   1. Pushes stay fast — no LLM latency on the critical path.
+#   2. Quota burn is predictable (1 run/day, not 1 run/push).
+#   3. Natural calibration variance (model drift, not our bug) can't
+#      block a hotfix deploy.
+#
+# On failure, opens a GitHub issue tagged `ai-detector`, `calibration`.
+# Re-runs update the existing open issue instead of spamming duplicates.
+#
+# To trigger manually:  Actions → Nightly — AI Detector Calibration → Run workflow
+
+on:
+  # The nightly schedule is OFF while this repo is parked. It called a real
+  # LLM every night for a project nobody was touching, burning API spend and
+  # Actions minutes to test code that had not changed, and paging Praveen
+  # with failures no one was waiting on. Run it by hand (button below), and
+  # put the cron back the day active work resumes here.
+  # schedule:
+  #   - cron: '23 2 * * *'   # 02:23 UTC daily, off-peak minute
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to test (default: latest)'
+        required: false
+        default: 'latest'
+
+env:
+  REGISTRY: ghcr.io
+  GITHUB_USER: ${{ github.repository_owner }}
+  IMAGE_TAG: ${{ github.event.inputs.image_tag || 'latest' }}
+
+jobs:
+  calibration:
+    name: "🎯 AI Detector Calibration (real LLM)"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      issues: write
+    outputs:
+      result: ${{ steps.e2e.outcome }}
+
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: "${{ github.actor }}"
+          password: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: "📥 Pull docsign-api image"
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ env.IMAGE_TAG }}
+
+      - name: "🎯 Run calibration against real LLM"
+        id: e2e
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          docker run --rm \
+            -e DEBUG=True \
+            -e SECRET_KEY=test-secret-key-for-nightly \
+            -e DB_ENGINE=sqlite \
+            -e GROQ_API_KEY="$GROQ_API_KEY" \
+            -e GEMINI_API_KEY="$GEMINI_API_KEY" \
+            -e RUN_AI_E2E=1 \
+            -e PYTHONWARNINGS=ignore \
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ env.IMAGE_TAG }} \
+            python tests/e2e_ai_detector.py 2>&1 | tee e2e_output.log
+          echo "✅ Calibration check complete"
+
+      - name: "📎 Upload calibration log"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-log-${{ github.run_id }}
+          path: e2e_output.log
+          retention-days: 30
+
+  report-failure:
+    name: "📮 Open / update calibration issue"
+    needs: calibration
+    if: failure() && needs.calibration.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: "🔍 Find or create issue"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const today = new Date().toISOString().slice(0, 10);
+            const title = '🎯 AI detector calibration drift';
+            const labels = ['ai-detector', 'calibration'];
+
+            // Find existing open issue with this title
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: labels.join(','),
+            });
+
+            const match = existing.data.find(i => i.title === title);
+
+            const body = [
+              `Nightly calibration run failed on **${today}**.`,
+              '',
+              `🔗 [View run logs](${runUrl})`,
+              '',
+              'This means the AI detector scores drifted outside the Turnitin-calibrated',
+              'range on at least one E2E test case. Possible causes:',
+              '',
+              '- Upstream LLM model update (Groq/Gemini) changed scoring behaviour',
+              '- Prompt regression in `ai_detector/providers/base.py`',
+              '- Free-tier quota exhausted — check provider dashboards',
+              '',
+              '**Action:** Pull the calibration log artifact from the run, inspect which',
+              'case drifted, and decide whether to retune the prompt or update the',
+              'expected score ranges in `tests/e2e_ai_detector.py`.',
+              '',
+              '---',
+              '_Auto-opened by `nightly-e2e.yml`. Will be updated, not duplicated, on',
+              'subsequent failures._',
+            ].join('\n');
+
+            if (match) {
+              // Update existing issue with a new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: match.number,
+                body: `⚠️ Still failing on **${today}**. [Run logs](${runUrl})`,
+              });
+              console.log(`Commented on existing issue #${match.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: labels,
+              });
+              console.log(`Opened issue #${created.data.number}`);
+            }

@@ -1,0 +1,103 @@
+# =============================================================
+# Postal Email Server — Overlay (designed to split)
+# =============================================================
+# NOW:   Runs on same server. No port 25 yet (Hetzner needs 1 month).
+#        Use Brevo/Gmail SMTP as temporary relay for transactional emails.
+#
+# LATER: Move to its own server (Hetzner/Kamatera) with port 25 open.
+#        Just copy this file + postal config to the new server.
+#        Update POSTAL_API_URL in the app .env files to point to it.
+#
+# Run:   docker compose -f docker-compose.postal.yml up -d
+# =============================================================
+
+services:
+
+  # Postal's own MariaDB (separate from app PostgreSQL)
+  postal-mariadb:
+    image: mariadb:10.9
+    container_name: postal-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: postal
+      MARIADB_ROOT_PASSWORD: ${POSTAL_DB_PASSWORD:-postal_secret}
+    volumes:
+      - postal-mariadb:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [postal-net]
+
+  # Postal's own RabbitMQ (separate from app Redis)
+  postal-rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: postal-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: postal
+      RABBITMQ_DEFAULT_PASS: ${POSTAL_RABBITMQ_PASSWORD:-postal_rabbit}
+      RABBITMQ_DEFAULT_VHOST: /postal
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [postal-net]
+
+  # Postal Web UI + API
+  postal-web:
+    image: ghcr.io/postalserver/postal:3.3.4
+    container_name: postal-web
+    command: postal web-server
+    restart: unless-stopped
+    depends_on:
+      postal-mariadb: { condition: service_healthy }
+      postal-rabbitmq: { condition: service_healthy }
+    ports:
+      - "${POSTAL_WEB_PORT:-5000}:5000"
+    volumes:
+      - ./postal-config:/config
+    networks: [postal-net, avyangah-net]
+
+  # Postal SMTP Server
+  postal-smtp:
+    image: ghcr.io/postalserver/postal:3.3.4
+    container_name: postal-smtp
+    command: postal smtp-server
+    restart: unless-stopped
+    depends_on:
+      postal-mariadb: { condition: service_healthy }
+      postal-rabbitmq: { condition: service_healthy }
+    ports:
+      # Port 25 for outbound delivery (needs Hetzner approval)
+      - "${POSTAL_SMTP_PORT:-25}:25"
+      # Port 2525 for app submission (always works)
+      - "2525:2525"
+    volumes:
+      - ./postal-config:/config
+    networks: [postal-net, avyangah-net]
+
+  # Postal Worker (processes email queue)
+  postal-worker:
+    image: ghcr.io/postalserver/postal:3.3.4
+    container_name: postal-worker
+    command: postal worker
+    restart: unless-stopped
+    depends_on:
+      postal-mariadb: { condition: service_healthy }
+      postal-rabbitmq: { condition: service_healthy }
+    volumes:
+      - ./postal-config:/config
+    networks: [postal-net]
+
+volumes:
+  postal-mariadb:
+
+networks:
+  postal-net:
+    driver: bridge
+  # Connect to main network so apps can reach Postal API
+  avyangah-net:
+    external: true

@@ -1,0 +1,145 @@
+# ============================================================
+# Care AI Engine - Docker Compose (Production)
+# Full stack: FastAPI + PostgreSQL + Redis + Ollama
+# ============================================================
+# 
+# Usage:
+#   docker compose up -d          # Start all services
+#   docker compose logs -f api    # Follow API logs
+#   docker compose down           # Stop everything
+#
+# First-time setup:
+#   docker compose up -d
+#   docker compose exec api python -m app.scrapers.nhs_scraper --all
+#
+# ============================================================
+
+services:
+  # --- Your API Server ---
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: careai-api
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      # ZDR: No uploads volume — media is processed in memory and destroyed
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - careai-net
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2'
+
+  # --- PostgreSQL (User Data, Usage Tracking) ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: careai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: careai
+      POSTGRES_USER: careai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-careai_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-net
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # --- Redis (Caching, Rate Limiting, Sessions) ---
+  redis:
+    image: redis:7-alpine
+    container_name: careai-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-net
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # --- Ollama (Local LLM Server) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: careai-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - careai-net
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
+    # GPU support (uncomment if you have NVIDIA GPU):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # --- Nginx (Reverse Proxy + SSL) - Production Only ---
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: careai-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./config/nginx.conf:/etc/nginx/conf.d/default.conf
+  #     - ./config/ssl:/etc/nginx/ssl
+  #   depends_on:
+  #     - api
+  #   networks:
+  #     - careai-net
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  ollama-data:
+    driver: local
+  # ZDR: No uploads volume needed — Zero Data Retention for media files
+
+networks:
+  careai-net:
+    driver: bridge

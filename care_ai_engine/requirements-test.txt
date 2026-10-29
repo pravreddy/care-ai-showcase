@@ -1,0 +1,32 @@
+# ============================================================
+# Care AI Engine - Test Dependencies
+# ============================================================
+
+# Testing framework
+# NOTE: pytest has CVE-2025-71176 (fixed in 9.0.3), but pytest-asyncio does
+# not yet support pytest 9 (all releases require pytest<9). Dev-only / low
+# risk, so left at 8.3.4 until pytest-asyncio ships pytest 9 support.
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+pytest-mock==3.14.0
+pytest-env==1.1.5
+
+# HTTP testing
+httpx==0.28.1
+
+# Fake data generation
+faker==33.1.0
+
+# Database testing
+pytest-postgresql==6.1.1
+sqlalchemy-utils==0.41.2
+
+# Code quality
+black==26.3.1  # SECURITY: was 25.1.0 (CVE-2026-32274)
+flake8==7.1.1
+mypy==1.13.0
+isort==5.13.2
+
+# Coverage reporting
+coverage[toml]==7.6.9

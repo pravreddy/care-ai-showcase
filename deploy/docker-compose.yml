@@ -1,0 +1,110 @@
+# Location: /home/deploy/careai/docker-compose.yml
+# Production version with NVMe storage paths
+
+x-app-base: &app_base
+  restart: unless-stopped
+  env_file: .env
+  networks: [careai-net]
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: careai-postgres
+    volumes: ["/mnt/nvme_data/postgres_data:/var/lib/postgresql/data"]
+    environment:
+      POSTGRES_DB: careai
+      POSTGRES_USER: careai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [careai-net]
+
+  redis:
+    image: redis:7-alpine
+    container_name: careai-redis
+    volumes: ["/mnt/nvme_data/redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [careai-net]
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: careai-ollama
+    environment: ["OLLAMA_HOST=0.0.0.0"]
+    volumes: ["/mnt/nvme_data/ollama_data:/root/.ollama"]
+    networks: [careai-net]
+
+  api-blue:
+    <<: *app_base
+    container_name: careai-api-blue
+    image: ghcr.io/${GITHUB_USER}/careai-api:latest
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ollama: { condition: service_started }
+    volumes:
+      - /mnt/nvme_data/logs:/app/logs
+      - /mnt/nvme_data/careai/blue:/app/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  api-green:
+    <<: *app_base
+    container_name: careai-api-green
+    image: ghcr.io/${GITHUB_USER}/careai-api:latest
+    profiles: [green]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ollama: { condition: service_started }
+    volumes:
+      - /mnt/nvme_data/logs:/app/logs
+      - /mnt/nvme_data/careai/green:/app/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  frontend-blue:
+    image: ghcr.io/${GITHUB_USER}/careai-frontend:latest
+    container_name: careai-frontend-blue
+    restart: unless-stopped
+    networks: [careai-net]
+
+  frontend-green:
+    image: ghcr.io/${GITHUB_USER}/careai-frontend:latest
+    container_name: careai-frontend-green
+    restart: unless-stopped
+    profiles: [green]
+    networks: [careai-net]
+
+  nginx:
+    image: nginx:alpine
+    container_name: careai-nginx
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    command: >
+      sh -c "rm -f /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./active_env.conf:/etc/nginx/active_env.conf:ro
+      - /mnt/nvme_data/ssl:/etc/nginx/ssl:ro
+    networks: [careai-net]
+
+networks:
+  careai-net: { driver: bridge }

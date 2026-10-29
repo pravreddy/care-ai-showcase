@@ -1,0 +1,403 @@
+diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
+index 4c251d5..d5e1ba5 100644
+--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -115,26 +115,95 @@ jobs:
+             ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-frontend:${{ github.sha }}
+           build-args: REACT_APP_API_URL=/api
+ 
+-  # ─── Step 3: Deploy ───
+-  #
+-  # DESIGN: Deploy runs if ANY build succeeded and NONE failed.
++  # ─── Step 2.5: Validate SignSimple migrations + system check ───
+   #
+-  # Key behaviour:
+-  #   - Always pulls :latest for ALL components (not just what changed)
+-  #   - If backend built in run #55 and frontend in #56, both :latest
+-  #     tags exist in GHCR, so deploy pulls both
+-  #   - If ANY build failed in THIS run, deploy is blocked (fix the
+-  #     failure first)
+-  #   - Migrations run whenever docsign-api was rebuilt (in this run
+-  #     or pulled from a previous successful build)
++  # Runs AFTER the API image is built, BEFORE deploy.
++  # Catches:
++  #   - Model changes without migration files (--check)
++  #   - Broken migrations that fail to apply on a fresh DB
++  #   - Django system check errors (--deploy flag)
+   #
+-  # The :latest tag acts as the "last known good" marker — it only
+-  # gets updated when a build succeeds, so pulling :latest is always
+-  # safe. The git SHA tag provides audit trail / rollback capability.
++  # Uses a fresh Postgres so it never touches production.
++  # If this fails, deploy is blocked.
+   #
++  validate-docsign:
++    name: Validate SignSimple
++    needs: [changes, build-docsign-api]
++    if: needs.changes.outputs.docsign_api == 'true'
++    runs-on: ubuntu-latest
++    permissions: { contents: read, packages: read }
++
++    services:
++      postgres:
++        image: postgres:16-alpine
++        env:
++          POSTGRES_DB: docsign_test
++          POSTGRES_USER: docsign_test
++          POSTGRES_PASSWORD: test_password
++        ports:
++          - 5432:5432
++        options: >-
++          --health-cmd "pg_isready -U docsign_test"
++          --health-interval 10s
++          --health-timeout 5s
++          --health-retries 5
++
++    steps:
++      - uses: docker/login-action@v3
++        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
++
++      - name: "🔍 Check migrations are complete"
++        run: |
++          docker run --rm --network host \
++            -e DEBUG=True \
++            -e SECRET_KEY=test-secret-key-for-ci \
++            -e DB_HOST=localhost \
++            -e DB_PORT=5432 \
++            -e DB_NAME=docsign_test \
++            -e DB_USER=docsign_test \
++            -e DB_PASSWORD=test_password \
++            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
++            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
++            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
++            python manage.py migrate --check
++          echo "✅ All migrations are up to date"
++
++      - name: "📦 Dry-run migrations on fresh DB"
++        run: |
++          docker run --rm --network host \
++            -e DEBUG=True \
++            -e SECRET_KEY=test-secret-key-for-ci \
++            -e DB_HOST=localhost \
++            -e DB_PORT=5432 \
++            -e DB_NAME=docsign_test \
++            -e DB_USER=docsign_test \
++            -e DB_PASSWORD=test_password \
++            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
++            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
++            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
++            python manage.py migrate --noinput
++          echo "✅ Migrations apply cleanly on fresh DB"
++
++      - name: "🏥 Django system check"
++        run: |
++          docker run --rm --network host \
++            -e DEBUG=True \
++            -e SECRET_KEY=test-secret-key-for-ci \
++            -e DB_HOST=localhost \
++            -e DB_PORT=5432 \
++            -e DB_NAME=docsign_test \
++            -e DB_USER=docsign_test \
++            -e DB_PASSWORD=test_password \
++            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
++            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
++            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
++            python manage.py check
++          echo "✅ System check passed"
++
++  # ─── Step 3: Deploy ───
+   deploy:
+     name: Deploy to UK Server
+-    needs: [changes, build-careai-api, build-careai-frontend, build-docsign-api, build-docsign-frontend]
++    needs: [changes, build-careai-api, build-careai-frontend, build-docsign-api, build-docsign-frontend, validate-docsign]
+     if: |
+       always() &&
+       !contains(needs.*.result, 'failure') &&
+@@ -164,7 +233,7 @@ jobs:
+             NEED_NGINX_RELOAD=false
+ 
+             # ==========================================
+-            # CARE AI — only if api or frontend changed
++            # CARE AI
+             # ==========================================
+             if [ "$CAREAI_API" = "true" ] || [ "$CAREAI_FE" = "true" ]; then
+               if grep -q "blue" active_env.conf; then
+@@ -174,11 +243,7 @@ jobs:
+               fi
+ 
+               echo "🚀 Care AI → $TARGET"
+-
+-              # Always pull :latest for BOTH api and frontend
+-              # (covers the case where one built in a previous run)
+               docker compose pull api-$TARGET frontend-$TARGET
+-
+               docker compose up -d api-$TARGET frontend-$TARGET
+ 
+               for i in $(seq 1 30); do
+@@ -206,7 +271,7 @@ jobs:
+             fi
+ 
+             # ==========================================
+-            # SIGNSIMPLE — only if api or frontend changed
++            # SIGNSIMPLE
+             # ==========================================
+             if [ "$DOCSIGN_API" = "true" ] || [ "$DOCSIGN_FE" = "true" ]; then
+               COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.docsign.yml"
+@@ -218,10 +283,6 @@ jobs:
+               fi
+ 
+               echo "🚀 SignSimple → $DS_TARGET"
+-
+-              # Always pull :latest for ALL SignSimple containers
+-              # This ensures we deploy the latest successful build
+-              # of each component, even if it was built in a previous run
+               $COMPOSE_CMD pull docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET docsign-celery
+ 
+               if [ "$DS_TARGET" = "green" ]; then
+@@ -239,8 +300,16 @@ jobs:
+                 exit 1
+               fi
+ 
+-              # Run Django migrations
+-              echo "📦 Running SignSimple migrations..."
++              # Dry-run: show what migrations would run
++              echo "📋 Migration plan:"
++              docker exec docsign-api-$DS_TARGET python manage.py migrate --plan 2>&1 || {
++                echo "❌ Migration plan failed — aborting deploy"
++                $COMPOSE_CMD stop docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET
++                exit 1
++              }
++
++              # Apply migrations
++              echo "📦 Applying migrations..."
+               docker exec docsign-api-$DS_TARGET python manage.py migrate --noinput
+               echo "✅ Migrations complete"
+ 
+@@ -254,7 +323,6 @@ jobs:
+               echo "⏭️  SignSimple — no changes, skipping"
+             fi
+ 
+-            # Reload nginx only if something changed
+             if [ "$NEED_NGINX_RELOAD" = "true" ]; then
+               docker exec careai-nginx nginx -s reload
+             fi
+diff --git a/pdf_doc_sign/deploy/deploy-docsign.sh b/pdf_doc_sign/deploy/deploy-docsign.sh
+index d171390..7a2276d 100644
+--- a/pdf_doc_sign/deploy/deploy-docsign.sh
++++ b/pdf_doc_sign/deploy/deploy-docsign.sh
+@@ -1,6 +1,7 @@
+ #!/bin/bash
+ # =============================================================
+ # SignSimple — Deploy Script
++# Avyangah Technologies Limited
+ # =============================================================
+ 
+ set -e
+@@ -11,6 +12,15 @@ COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.docsign.yml"
+ ACTION=${1:-help}
+ cd "$DEPLOY_DIR"
+ 
++# Helper: get active colour
++get_active() {
++  if grep -q "blue" active_docsign.conf 2>/dev/null; then
++    echo "blue"
++  else
++    echo "green"
++  fi
++}
++
+ case "$ACTION" in
+ 
+   setup)
+@@ -53,10 +63,10 @@ case "$ACTION" in
+ 
+     echo "=== SignSimple → $COLOUR ==="
+ 
+-    echo "[1/5] Pulling images..."
++    echo "[1/6] Pulling images..."
+     $COMPOSE_CMD pull docsign-api-$COLOUR docsign-frontend-$COLOUR docsign-celery
+ 
+-    echo "[2/5] Starting $COLOUR..."
++    echo "[2/6] Starting $COLOUR..."
+     if [ "$COLOUR" = "green" ]; then
+       $COMPOSE_CMD --profile docsign-green up -d docsign-api-$COLOUR docsign-frontend-$COLOUR
+     else
+@@ -64,7 +74,7 @@ case "$ACTION" in
+     fi
+     $COMPOSE_CMD up -d docsign-celery
+ 
+-    echo "[3/5] Health check (12s)..."
++    echo "[3/6] Health check (12s)..."
+     sleep 12
+     HEALTH=$(docker exec docsign-api-$COLOUR python manage.py check 2>&1)
+     if echo "$HEALTH" | grep -q "System check identified no issues"; then
+@@ -75,11 +85,18 @@ case "$ACTION" in
+       exit 1
+     fi
+ 
+-    echo "[4/5] Running migrations..."
++    echo "[4/6] Migration dry-run..."
++    docker exec docsign-api-$COLOUR python manage.py migrate --plan || {
++      echo "  ✗ Migration plan FAILED — rolling back"
++      $COMPOSE_CMD stop docsign-api-$COLOUR docsign-frontend-$COLOUR
++      exit 1
++    }
++
++    echo "[5/6] Applying migrations..."
+     docker exec docsign-api-$COLOUR python manage.py migrate --noinput
+     echo "  ✓ Migrations complete"
+ 
+-    echo "[5/5] Switching traffic to $COLOUR..."
++    echo "[6/6] Switching traffic to $COLOUR..."
+     cat > "$DEPLOY_DIR/active_docsign.conf" << EOF
+ set \$ds_backend "docsign-api-$COLOUR:8000";
+ set \$ds_frontend "docsign-frontend-$COLOUR:80";
+@@ -91,21 +108,98 @@ EOF
+     echo "Stop old: $COMPOSE_CMD stop docsign-api-$OTHER docsign-frontend-$OTHER"
+     ;;
+ 
++  dry-run)
++    ACTIVE=$(get_active)
++    OTHER=$( [ "$ACTIVE" = "blue" ] && echo "green" || echo "blue" )
++
++    echo "=== SignSimple — Dry Run (no changes will be made) ==="
++    echo ""
++    echo "📋 Current state:"
++    echo "  Active colour: $ACTIVE"
++    echo "  Next deploy would target: $OTHER"
++    echo ""
++
++    echo "📋 Container status:"
++    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | grep -E "docsign" || echo "  None running"
++    echo ""
++
++    echo "📋 Django system check on active ($ACTIVE):"
++    docker exec docsign-api-$ACTIVE python manage.py check 2>&1 | head -5
++    echo ""
++
++    echo "📋 Migration check (are all model changes captured?):"
++    docker exec docsign-api-$ACTIVE python manage.py migrate --check 2>&1 && \
++      echo "  ✓ All migrations are up to date" || \
++      echo "  ⚠ There are model changes not yet in migrations"
++    echo ""
++
++    echo "📋 Migration plan (what would run next):"
++    PLAN=$(docker exec docsign-api-$ACTIVE python manage.py migrate --plan 2>&1)
++    if echo "$PLAN" | grep -q "No planned migration operations"; then
++      echo "  ✓ No pending migrations"
++    else
++      echo "$PLAN" | head -20
++    fi
++    echo ""
++
++    echo "📋 Disk usage:"
++    du -sh /mnt/nvme_data/* 2>/dev/null || echo "  NVMe not mounted"
++    echo ""
++
++    echo "=== Dry run complete — no changes were made ==="
++    ;;
++
+   migrate)
+-    echo "=== Running migrations on active container ==="
+-    if grep -q "blue" active_docsign.conf 2>/dev/null; then
+-      ACTIVE="blue"
++    ACTIVE=$(get_active)
++    echo "=== Running migrations on active container ($ACTIVE) ==="
++
++    echo "📋 Migration plan:"
++    docker exec docsign-api-$ACTIVE python manage.py migrate --plan || {
++      echo "❌ Migration plan failed"
++      exit 1
++    }
++
++    echo ""
++    read -p "Apply these migrations? (y/N) " CONFIRM
++    if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
++      docker exec docsign-api-$ACTIVE python manage.py migrate --noinput
++      echo "✅ Migrations complete"
+     else
+-      ACTIVE="green"
++      echo "⏭️  Skipped"
+     fi
+-    echo "Active: $ACTIVE"
+-    docker exec docsign-api-$ACTIVE python manage.py migrate --noinput
+-    echo "✅ Migrations complete"
++    ;;
++
++  check)
++    ACTIVE=$(get_active)
++    echo "=== SignSimple — Health Checks ($ACTIVE) ==="
++    echo ""
++
++    echo "🏥 Django system check:"
++    docker exec docsign-api-$ACTIVE python manage.py check 2>&1
++    echo ""
++
++    echo "📋 Migration status:"
++    docker exec docsign-api-$ACTIVE python manage.py migrate --check 2>&1 && \
++      echo "  ✓ All migrations applied" || \
++      echo "  ⚠ Unapplied migrations detected"
++    echo ""
++
++    echo "📋 Pending migrations:"
++    docker exec docsign-api-$ACTIVE python manage.py showmigrations --plan 2>&1 | grep "\[ \]" || echo "  ✓ None"
++    echo ""
++
++    echo "🔌 Database connection:"
++    docker exec docsign-api-$ACTIVE python -c "
++import django; django.setup()
++from django.db import connection
++connection.ensure_connection()
++print('  ✓ Connected to', connection.settings_dict['NAME'])
++" 2>&1 || echo "  ❌ Failed"
+     ;;
+ 
+   status)
+     echo "=== Containers ==="
+-    docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "(careai|docsign)" || echo "None"
++    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | grep -E "(careai|docsign)" || echo "None"
+     echo ""
+     echo "=== Active Colour ==="
+     cat "$DEPLOY_DIR/active_docsign.conf" 2>/dev/null || echo "Not set"
+@@ -115,7 +209,8 @@ EOF
+     ;;
+ 
+   logs)
+-    CONTAINER=${2:-docsign-api-blue}
++    CONTAINER=${2:-docsign-api-$(get_active)}
++    echo "=== Tailing logs for $CONTAINER ==="
+     docker logs $CONTAINER --tail 50 -f
+     ;;
+ 
+@@ -131,14 +226,23 @@ EOF
+ 
+   *)
+     echo "SignSimple — Deploy Script"
++    echo "Avyangah Technologies Limited"
++    echo ""
++    echo "  Deployment:"
++    echo "    ./deploy-docsign.sh setup      First-time setup"
++    echo "    ./deploy-docsign.sh blue       Deploy to blue"
++    echo "    ./deploy-docsign.sh green      Deploy to green"
++    echo ""
++    echo "  Safety checks:"
++    echo "    ./deploy-docsign.sh dry-run    Preview what would happen (no changes)"
++    echo "    ./deploy-docsign.sh check      Run all health checks on active"
++    echo "    ./deploy-docsign.sh migrate    Show plan + apply migrations (with confirm)"
+     echo ""
+-    echo "  ./deploy-docsign.sh setup    First-time"
+-    echo "  ./deploy-docsign.sh blue     Deploy to blue"
+-    echo "  ./deploy-docsign.sh green    Deploy to green"
+-    echo "  ./deploy-docsign.sh migrate  Run migrations on active"
+-    echo "  ./deploy-docsign.sh status   Show status"
+-    echo "  ./deploy-docsign.sh logs     Tail logs"
+-    echo "  ./deploy-docsign.sh stop     Stop SignSimple"
+-    echo "  ./deploy-docsign.sh backup   Backup DBs"
++    echo "  Operations:"
++    echo "    ./deploy-docsign.sh status     Show container status"
++    echo "    ./deploy-docsign.sh logs       Tail logs (active container)"
++    echo "    ./deploy-docsign.sh logs <name> Tail specific container"
++    echo "    ./deploy-docsign.sh stop       Stop all SignSimple containers"
++    echo "    ./deploy-docsign.sh backup     Backup databases"
+     ;;
+ esac

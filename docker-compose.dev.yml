@@ -1,0 +1,184 @@
+# ============================================================
+# Care AI - Local Development Stack
+#
+# This runs on your local machine and builds images from source.
+# Both frontend and backend run together for full-stack development.
+#
+# Quick Start:
+#   1. Copy .env.example to .env in both frontend and backend
+#   2. docker-compose up -d
+#   3. Wait for services to start (check logs)
+#   4. Open http://localhost:3000 (frontend)
+#   5. API available at http://localhost:8000
+#
+# Architecture:
+#   Browser → :3000 → Frontend (React + Vite dev server)
+#                      └── /api → Backend (FastAPI)
+#                                   ├── PostgreSQL
+#                                   ├── Redis
+#                                   └── Ollama (LLM)
+# ============================================================
+
+services:
+
+  # --- Frontend (React + Vite) ---
+  frontend:
+    build:
+      context: ./care_ai_frontend
+      dockerfile: Dockerfile.dev
+    container_name: careai-frontend-dev
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # Vite dev server
+    volumes:
+      # Mount source code for hot reload
+      - ./care_ai_frontend/src:/app/src:cached
+      - ./care_ai_frontend/index.html:/app/index.html:cached
+      - ./care_ai_frontend/vite.config.js:/app/vite.config.js:cached
+      - ./care_ai_frontend/package.json:/app/package.json:cached
+      # Prevent node_modules from being overwritten
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=http://localhost:8000
+      - CHOKIDAR_USEPOLLING=true  # For file watching in Docker
+    depends_on:
+      - api
+    networks:
+      - careai-net
+    stdin_open: true
+    tty: true
+
+  # --- Backend API ---
+  api:
+    build:
+      context: ./care_ai_engine
+      dockerfile: Dockerfile.dev
+    container_name: careai-api-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # FastAPI
+    volumes:
+      # Mount source code for hot reload
+      - ./care_ai_engine/app:/app/app:cached
+      - ./care_ai_engine/app/data:/app/app/data:cached
+      - ./care_ai_engine/alembic:/app/alembic:cached
+      - ./care_ai_engine/tests:/app/tests:cached
+      - ./care_ai_engine/.env:/app/.env:ro
+      - api-logs:/app/logs
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://careai:careai_secret@postgres:5432/careai
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    networks:
+      - careai-net
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # --- PostgreSQL ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: careai-postgres-dev
+    restart: unless-stopped
+    ports:
+      - "5432:5432"  # Exposed for local tools (pgAdmin, etc.)
+    environment:
+      POSTGRES_DB: careai
+      POSTGRES_USER: careai
+      POSTGRES_PASSWORD: careai_secret
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-net
+
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    container_name: careai-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"  # Exposed for local tools (Redis CLI, etc.)
+    volumes:
+      - redis-data:/data
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-net
+
+  # --- Ollama (Local LLM) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: careai-ollama-dev
+    restart: unless-stopped
+    ports:
+      - "11434:11434"  # Exposed for local testing
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - careai-net
+
+  # --- Ollama Init (Pull Model) ---
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: careai-ollama-init
+    depends_on:
+      ollama:
+        condition: service_started
+    networks:
+      - careai-net
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+    entrypoint: >
+      sh -c "
+        echo 'Waiting for Ollama to be ready...'
+        until curl -sf http://ollama:11434/api/tags > /dev/null 2>&1; do
+          sleep 2
+        done
+        echo \"Pulling $${OLLAMA_MODEL} model (this may take a few minutes)...\"
+        curl -sf http://ollama:11434/api/pull -d \"{\\\"name\\\": \\\"$${OLLAMA_MODEL}\\\"}\" | tail -1
+        echo 'Model ready!'
+      "
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  ollama-data:
+    driver: local
+  api-logs:
+    driver: local
+
+networks:
+  careai-net:
+    driver: bridge

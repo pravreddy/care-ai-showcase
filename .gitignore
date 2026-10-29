@@ -1,0 +1,54 @@
+# Environment
+.env
+*.env.local
+.env.docsign
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+.coverage
+htmlcov/
+
+# Data (large files, scraped content)
+data/chromadb/
+data/medicines/
+data/conditions/
+data/uploads/
+*.db
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.iws
+*.iml
+*.ipr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# Docker
+docker-compose.override.yml
+
+# Whisper models
+care_ai_engine/app/data/whisper/
+*.pt
+
+# Sensitive deploy files (keep local only)
+**/DEPLOY_GUIDE.md
+deploy/active_env.conf
+deploy/.env

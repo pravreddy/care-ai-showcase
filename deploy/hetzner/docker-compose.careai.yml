@@ -1,0 +1,90 @@
+# =============================================================
+# Care AI Engine — App Overlay
+# =============================================================
+# Run with base: docker compose -f docker-compose.yml -f docker-compose.careai.yml up -d
+#
+# Split to separate server later:
+#   Change DATABASE_URL and REDIS_URL to point to the infra server.
+#   Run this compose file alone on the app server.
+# =============================================================
+
+services:
+
+  careai-api-blue:
+    image: ghcr.io/${GITHUB_USER}/careai-api:latest
+    container_name: careai-api-blue
+    restart: unless-stopped
+    command: >
+      sh -c "alembic upgrade head &&
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --access-log --log-level info"
+    env_file: .env.careai
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-avyangah}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/careai
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/0
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      # For future: switch back to Ollama by changing these
+      - OLLAMA_BASE_URL=http://${OLLAMA_HOST:-ollama}:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+    volumes:
+      - careai-logs:/app/logs
+      - careai-data:/app/app/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks: [avyangah-net]
+
+  careai-api-green:
+    image: ghcr.io/${GITHUB_USER}/careai-api:latest
+    container_name: careai-api-green
+    restart: "no"
+    profiles: ["careai-green"]
+    command: >
+      sh -c "alembic upgrade head &&
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http httptools --access-log --log-level info"
+    env_file: .env.careai
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-avyangah}:${DB_PASSWORD}@${DB_HOST:-postgres}:${DB_PORT:-5432}/careai
+      - REDIS_URL=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/0
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - OLLAMA_BASE_URL=http://${OLLAMA_HOST:-ollama}:11434
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.2:3b}
+    volumes:
+      - careai-logs:/app/logs
+      - careai-data:/app/app/data
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks: [avyangah-net]
+
+  careai-frontend-blue:
+    image: ghcr.io/${GITHUB_USER}/careai-frontend:latest
+    container_name: careai-frontend-blue
+    restart: unless-stopped
+    networks: [avyangah-net]
+
+  careai-frontend-green:
+    image: ghcr.io/${GITHUB_USER}/careai-frontend:latest
+    container_name: careai-frontend-green
+    restart: "no"
+    profiles: ["careai-green"]
+    networks: [avyangah-net]
+
+volumes:
+  careai-logs:
+  careai-data:

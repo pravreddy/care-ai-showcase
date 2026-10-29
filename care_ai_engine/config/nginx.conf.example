@@ -1,0 +1,76 @@
+# ============================================================
+# Care AI Engine - Nginx Reverse Proxy Configuration
+# ============================================================
+# Copy to: /etc/nginx/conf.d/careai.conf
+# SSL: Use certbot for free Let's Encrypt certificates
+#   sudo certbot --nginx -d api.yourdomain.co.uk
+# ============================================================
+
+# Rate limiting zone
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/m;
+
+upstream careai_api {
+    server 127.0.0.1:8000;
+    keepalive 32;
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name api.yourdomain.co.uk;
+    return 301 https://$server_name$request_uri;
+}
+
+# HTTPS server
+server {
+    listen 443 ssl http2;
+    server_name api.yourdomain.co.uk;
+
+    # SSL (managed by certbot)
+    ssl_certificate /etc/letsencrypt/live/api.yourdomain.co.uk/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.yourdomain.co.uk/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # API routes
+    location /api/ {
+        limit_req zone=api_limit burst=10 nodelay;
+        
+        proxy_pass http://careai_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Timeouts for LLM responses
+        proxy_read_timeout 120s;
+        proxy_connect_timeout 10s;
+    }
+
+    # Health check (no rate limit)
+    location /health {
+        proxy_pass http://careai_api;
+    }
+
+    location /ping {
+        proxy_pass http://careai_api;
+    }
+
+    # Block access to docs in production
+    location /docs {
+        return 404;
+    }
+
+    location /redoc {
+        return 404;
+    }
+
+    # Max upload size for voice notes
+    client_max_body_size 50M;
+}

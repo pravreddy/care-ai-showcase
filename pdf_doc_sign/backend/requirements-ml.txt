@@ -1,0 +1,21 @@
+# Heavy ML dependencies for the LOCAL Binoculars AI detector
+# (ai_detector provider 'binoculars').
+#
+# These are intentionally NOT in requirements.txt — they're large and only
+# needed where the detector actually runs. Install them in that environment
+# (typically the Celery worker that processes AI-detection scans):
+#
+#     pip install -r requirements-ml.txt
+#
+# CPU-only is fine with the default small models (SmolLM2-360M pair). For GPU,
+# install the CUDA-matched torch wheel instead and set BINOCULARS_DEVICE=cuda.
+#
+# First run downloads the models from Hugging Face (~0.7 GB for the default
+# pair); pre-warm by hitting the provider once, or pre-download in the image.
+
+torch>=2.2,<3.0
+transformers>=4.44,<5.0
+safetensors>=0.4
+
+# Optional — smoother model loading / device placement:
+# accelerate>=0.33

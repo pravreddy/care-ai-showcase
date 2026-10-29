@@ -1,0 +1,131 @@
+# ============================================================
+# Care AI - LOCAL DEVELOPMENT
+# Build and run frontend + backend from source
+# ============================================================
+
+version: '3.8'
+
+services:
+  # --- PostgreSQL Database ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: careai-postgres-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: careai
+      POSTGRES_USER: careai
+      POSTGRES_PASSWORD: careai_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data-local:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U careai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-local
+
+  # --- Redis Cache ---
+  redis:
+    image: redis:7-alpine
+    container_name: careai-redis-local
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data-local:/data
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - careai-local
+
+  # --- Ollama LLM ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: careai-ollama-local
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    volumes:
+      - ollama-data-local:/root/.ollama
+    networks:
+      - careai-local
+
+  # --- Backend API ---
+  api:
+    build:
+      context: ./care_ai_engine
+      dockerfile: Dockerfile
+    container_name: careai-api-local
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://careai:careai_secret@postgres:5432/careai
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:3b
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key-in-production}
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:80,http://localhost
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - ./care_ai_engine/logs:/app/logs
+      - ./care_ai_engine/app/data:/app/app/data:cached
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ping"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    networks:
+      - careai-local
+
+  # --- Frontend ---
+  frontend:
+    build:
+      context: ./care_ai_frontend
+      dockerfile: Dockerfile
+    container_name: careai-frontend-local
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - careai-local
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  postgres-data-local:
+    driver: local
+  redis-data-local:
+    driver: local
+  ollama-data-local:
+    driver: local
+
+networks:
+  careai-local:
+    driver: bridge

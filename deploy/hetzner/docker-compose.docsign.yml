@@ -1,0 +1,100 @@
+# =============================================================
+# SignSimple (DocSign UK) — App Overlay
+# =============================================================
+# Run with base: docker compose -f docker-compose.yml -f docker-compose.docsign.yml up -d
+#
+# Split to separate server later:
+#   Change DB_HOST, REDIS host env vars to point to infra server.
+# =============================================================
+
+services:
+
+  docsign-api-blue:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-api-blue
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py setup_site --domain ${DOCSIGN_DOMAIN:-signsimple.co.uk} --name 'SignSimple' &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file: .env.docsign
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=docsign_uk
+      - DB_USER=${DB_USER:-avyangah}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - CELERY_BROKER_URL=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+      - CELERY_RESULT_BACKEND=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+    volumes:
+      - docsign-media:/app/media
+      - docsign-static:/app/staticfiles
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [avyangah-net]
+
+  docsign-api-green:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-api-green
+    restart: "no"
+    profiles: ["docsign-green"]
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file: .env.docsign
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=docsign_uk
+      - DB_USER=${DB_USER:-avyangah}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - CELERY_BROKER_URL=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+      - CELERY_RESULT_BACKEND=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+    volumes:
+      - docsign-media:/app/media
+      - docsign-static:/app/staticfiles
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [avyangah-net]
+
+  docsign-celery:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-celery
+    restart: unless-stopped
+    command: celery -A core worker --beat --loglevel=info --concurrency=1
+    env_file: .env.docsign
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=docsign_uk
+      - DB_USER=${DB_USER:-avyangah}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - CELERY_BROKER_URL=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+      - CELERY_RESULT_BACKEND=redis://${REDIS_HOST:-redis}:${REDIS_PORT:-6379}/1
+    volumes:
+      - docsign-media:/app/media
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [avyangah-net]
+
+  docsign-frontend-blue:
+    image: ghcr.io/${GITHUB_USER}/docsign-frontend:latest
+    container_name: docsign-frontend-blue
+    restart: unless-stopped
+    networks: [avyangah-net]
+
+  docsign-frontend-green:
+    image: ghcr.io/${GITHUB_USER}/docsign-frontend:latest
+    container_name: docsign-frontend-green
+    restart: "no"
+    profiles: ["docsign-green"]
+    networks: [avyangah-net]
+
+volumes:
+  docsign-media:
+  docsign-static:

@@ -1,0 +1,450 @@
+name: Build & Deploy Platform
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  GITHUB_USER: ${{ github.repository_owner }}
+
+jobs:
+  # ─── Step 1: Detect what changed ───
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      careai_api: ${{ steps.filter.outputs.careai_api }}
+      careai_frontend: ${{ steps.filter.outputs.careai_frontend }}
+      docsign_api: ${{ steps.filter.outputs.docsign_api }}
+      docsign_frontend: ${{ steps.filter.outputs.docsign_frontend }}
+      deploy_config: ${{ steps.filter.outputs.deploy_config }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            careai_api:
+              - 'care_ai_engine/**'
+            careai_frontend:
+              - 'care_ai_frontend/**'
+            docsign_api:
+              - 'pdf_doc_sign/backend/**'
+            docsign_frontend:
+              - 'pdf_doc_sign/frontend/**'
+            deploy_config:
+              - 'pdf_doc_sign/deploy/**'
+              - 'nginx-docsign.conf'
+              - '.github/workflows/**'
+
+  # ─── Step 2: Build only what changed ───
+  build-careai-api:
+    name: Build Care AI API
+    needs: changes
+    if: needs.changes.outputs.careai_api == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./care_ai_engine
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/careai-api:latest
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/careai-api:${{ github.sha }}
+
+  build-careai-frontend:
+    name: Build Care AI Frontend
+    needs: changes
+    if: needs.changes.outputs.careai_frontend == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./care_ai_frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/careai-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/careai-frontend:${{ github.sha }}
+
+  build-docsign-api:
+    name: Build SignSimple API
+    needs: changes
+    if: needs.changes.outputs.docsign_api == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./pdf_doc_sign/backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:latest
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }}
+
+  build-docsign-frontend:
+    name: Build SignSimple Frontend
+    needs: changes
+    if: needs.changes.outputs.docsign_frontend == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./pdf_doc_sign/frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-frontend:${{ github.sha }}
+          build-args: REACT_APP_API_URL=/api
+
+  # ─── Step 2.5a: Backend Tests ───
+  test-docsign-api:
+    name: "🧪 SignSimple Backend Tests"
+    needs: [changes, build-docsign-api]
+    if: needs.changes.outputs.docsign_api == 'true'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: read }
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: docsign_test
+          POSTGRES_USER: docsign_test
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docsign_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - name: "📦 Apply all migrations on fresh DB"
+        run: |
+          sleep 5
+          docker run --rm --network host \
+            -e DEBUG=True \
+            -e SECRET_KEY=test-secret-key-for-ci \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=docsign_test \
+            -e DB_USER=docsign_test \
+            -e DB_PASSWORD=test_password \
+            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
+            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
+            -e PYTHONWARNINGS=ignore \
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
+            python -W ignore manage.py migrate --noinput
+          echo "✅ All migrations apply cleanly on fresh DB"
+
+      - name: "🔍 Check no missing migrations"
+        run: |
+          docker run --rm --network host \
+            -e DEBUG=True \
+            -e SECRET_KEY=test-secret-key-for-ci \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=docsign_test \
+            -e DB_USER=docsign_test \
+            -e DB_PASSWORD=test_password \
+            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
+            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
+            -e PYTHONWARNINGS=ignore \
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
+            python -W ignore manage.py migrate --check
+          echo "✅ No missing migration files"
+
+      - name: "🏥 Django system check"
+        run: |
+          docker run --rm --network host \
+            -e DEBUG=True \
+            -e SECRET_KEY=test-secret-key-for-ci \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=docsign_test \
+            -e DB_USER=docsign_test \
+            -e DB_PASSWORD=test_password \
+            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
+            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
+            -e PYTHONWARNINGS=ignore \
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
+            python -W ignore manage.py check
+          echo "✅ System check passed"
+
+      - name: "🧪 Run Backend Test Suite"
+        run: |
+          docker run --rm --network host \
+            -e DEBUG=True \
+            -e SECRET_KEY=test-secret-key-for-ci \
+            -e DB_HOST=localhost \
+            -e DB_PORT=5432 \
+            -e DB_NAME=docsign_test \
+            -e DB_USER=docsign_test \
+            -e DB_PASSWORD=test_password \
+            -e CELERY_BROKER_URL=redis://localhost:6379/1 \
+            -e CELERY_RESULT_BACKEND=redis://localhost:6379/1 \
+            -e PYTHONWARNINGS=ignore \
+            ${{ env.REGISTRY }}/${{ env.GITHUB_USER }}/docsign-api:${{ github.sha }} \
+            pytest --disable-warnings -v --tb=short
+          echo "✅ All backend tests passed"
+
+  # ─── Step 2.5b: Frontend Lint + Tests ───
+  test-docsign-frontend:
+    name: "🧪 SignSimple Frontend Tests"
+    needs: changes
+    if: needs.changes.outputs.docsign_frontend == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "📦 Setup Node.js"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: "📥 Install dependencies"
+        working-directory: pdf_doc_sign/frontend
+        run: npm install --no-audit --no-fund
+
+      - name: "🔍 Lint check (ESLint via react-scripts)"
+        working-directory: pdf_doc_sign/frontend
+        env:
+          CI: true
+        run: npx react-scripts build
+        # react-scripts build treats ESLint warnings as errors in CI mode
+        # This catches unused imports, undefined vars, etc.
+
+      - name: "🧪 Run Frontend Tests"
+        working-directory: pdf_doc_sign/frontend
+        env:
+          CI: true
+        run: npx react-scripts test --watchAll=false --ci --passWithNoTests
+        # --passWithNoTests: don't fail if a test file has no tests
+        # --ci: non-interactive mode, fails on any test failure
+
+  # Note: AI detector calibration (real LLM E2E) runs nightly, not on push.
+  # See .github/workflows/nightly-e2e.yml
+
+  # ─── Step 3: Deploy ───
+  deploy:
+    name: Deploy to UK Server
+    needs:
+      - changes
+      - build-careai-api
+      - build-careai-frontend
+      - build-docsign-api
+      - build-docsign-frontend
+      - test-docsign-api
+      - test-docsign-frontend
+    if: |
+      always() &&
+      !contains(needs.*.result, 'failure') &&
+      (needs.build-careai-api.result == 'success' ||
+       needs.build-careai-frontend.result == 'success' ||
+       needs.build-docsign-api.result == 'success' ||
+       needs.build-docsign-frontend.result == 'success' ||
+       needs.changes.outputs.deploy_config == 'true')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.UK_SERVER_IP }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /home/deploy/careai
+
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            CAREAI_API=${{ needs.changes.outputs.careai_api }}
+            CAREAI_FE=${{ needs.changes.outputs.careai_frontend }}
+            DOCSIGN_API=${{ needs.changes.outputs.docsign_api }}
+            DOCSIGN_FE=${{ needs.changes.outputs.docsign_frontend }}
+
+            # ==========================================
+            # CARE AI
+            # ==========================================
+            if [ "$CAREAI_API" = "true" ] || [ "$CAREAI_FE" = "true" ]; then
+              if grep -q "blue" active_env.conf; then
+                TARGET="green"; OLD="blue"
+              else
+                TARGET="blue"; OLD="green"
+              fi
+
+              echo "🚀 Care AI → $TARGET"
+              docker compose pull api-$TARGET frontend-$TARGET
+              docker compose up -d api-$TARGET frontend-$TARGET
+
+              for i in $(seq 1 30); do
+                STATUS=$(docker inspect -f '{{.State.Health.Status}}' careai-api-$TARGET 2>/dev/null || echo "starting")
+                [ "$STATUS" = "healthy" ] && break
+                sleep 5
+              done
+
+              if [ "$STATUS" != "healthy" ]; then
+                echo "❌ Care AI $TARGET failed"
+                docker compose stop api-$TARGET frontend-$TARGET
+                exit 1
+              fi
+
+              docker exec -e PYTHONPATH=/app careai-api-$TARGET alembic upgrade head
+
+              echo "set \$active_backend \"careai-api-$TARGET:8000\";" > active_env.conf
+              echo "set \$active_frontend \"careai-frontend-$TARGET:80\";" >> active_env.conf
+
+              # Reload nginx onto the NEW colour BEFORE stopping the old one —
+              # otherwise nginx keeps routing to a stopped container = 502.
+              # `nginx -t` gate: a bad config can never take the site down.
+              docker exec careai-nginx nginx -t
+
+              # Zero-downtime probe: hammer the public path across reload + old-stop.
+              rm -f /tmp/zdt_careai
+              ( while :; do
+                  curl -sf -k --max-time 4 --resolve careaisoftware.co.uk:443:127.0.0.1 \
+                    https://careaisoftware.co.uk/healthz >/dev/null 2>&1 || echo x >> /tmp/zdt_careai
+                  sleep 0.3
+                done ) &
+              ZDT_CAREAI=$!
+
+              docker exec careai-nginx nginx -s reload
+
+              echo "✅ Care AI → $TARGET"
+              docker compose stop api-$OLD frontend-$OLD 2>/dev/null || true
+
+              sleep 1
+              kill $ZDT_CAREAI 2>/dev/null || true
+              ZF=0; [ -f /tmp/zdt_careai ] && ZF=$(wc -l < /tmp/zdt_careai | tr -d ' ')
+              echo "🔎 Care AI cutover probe: ${ZF} dropped request(s)"
+              if [ "${ZF:-0}" -gt 1 ]; then
+                echo "❌ Care AI is LIVE on $TARGET but cutover dropped ${ZF} requests (not zero-downtime)"
+                ZDT_FAIL=1
+              fi
+            else
+              echo "⏭️  Care AI — no changes, skipping"
+            fi
+
+            # ==========================================
+            # SIGNSIMPLE
+            # ==========================================
+            if [ "$DOCSIGN_API" = "true" ] || [ "$DOCSIGN_FE" = "true" ]; then
+              COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.docsign.yml"
+
+              if grep -q "blue" active_docsign.conf 2>/dev/null; then
+                DS_TARGET="green"; DS_OLD="blue"
+              else
+                DS_TARGET="blue"; DS_OLD="green"
+              fi
+
+              echo "🚀 SignSimple → $DS_TARGET"
+              $COMPOSE_CMD pull docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET docsign-celery
+
+              if [ "$DS_TARGET" = "green" ]; then
+                $COMPOSE_CMD --profile docsign-green up -d docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET
+              else
+                $COMPOSE_CMD up -d docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET
+              fi
+              $COMPOSE_CMD up -d docsign-celery
+
+              sleep 12
+              HEALTH=$(docker exec docsign-api-$DS_TARGET python manage.py check 2>&1)
+              if ! echo "$HEALTH" | grep -q "System check identified no issues"; then
+                echo "❌ SignSimple $DS_TARGET failed health check"
+                $COMPOSE_CMD stop docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET
+                exit 1
+              fi
+
+              echo "📋 Migration plan:"
+              docker exec docsign-api-$DS_TARGET python manage.py migrate --plan 2>&1 || {
+                echo "❌ Migration plan failed — aborting deploy"
+                $COMPOSE_CMD stop docsign-api-$DS_TARGET docsign-frontend-$DS_TARGET
+                exit 1
+              }
+
+              echo "📦 Applying migrations..."
+              docker exec docsign-api-$DS_TARGET python manage.py migrate --noinput
+              echo "✅ Migrations complete"
+
+              echo "set \$ds_backend \"docsign-api-$DS_TARGET:8000\";" > active_docsign.conf
+              echo "set \$ds_frontend \"docsign-frontend-$DS_TARGET:80\";" >> active_docsign.conf
+
+              # Refresh SignSimple's nginx server block if it changed, then reload
+              # onto the NEW colour BEFORE stopping the old one (avoids the 502).
+              if [ -f "$HOME/careai/nginx-docsign.conf" ]; then
+                cp nginx-docsign.conf /etc/nginx/conf.d/nginx-docsign.conf 2>/dev/null || \
+                docker cp nginx-docsign.conf careai-nginx:/etc/nginx/conf.d/nginx-docsign.conf
+              fi
+              docker exec careai-nginx nginx -t
+
+              # Zero-downtime probe: hammer the public path across reload + old-stop.
+              rm -f /tmp/zdt_docsign
+              ( while :; do
+                  curl -sf -k --max-time 4 --resolve signsimple.co.uk:443:127.0.0.1 \
+                    https://signsimple.co.uk/ >/dev/null 2>&1 || echo x >> /tmp/zdt_docsign
+                  sleep 0.3
+                done ) &
+              ZDT_DOCSIGN=$!
+
+              docker exec careai-nginx nginx -s reload
+
+              echo "✅ SignSimple → $DS_TARGET"
+              $COMPOSE_CMD stop docsign-api-$DS_OLD docsign-frontend-$DS_OLD 2>/dev/null || true
+
+              sleep 1
+              kill $ZDT_DOCSIGN 2>/dev/null || true
+              ZF=0; [ -f /tmp/zdt_docsign ] && ZF=$(wc -l < /tmp/zdt_docsign | tr -d ' ')
+              echo "🔎 SignSimple cutover probe: ${ZF} dropped request(s)"
+              if [ "${ZF:-0}" -gt 1 ]; then
+                echo "❌ SignSimple is LIVE on $DS_TARGET but cutover dropped ${ZF} requests (not zero-downtime)"
+                ZDT_FAIL=1
+              fi
+            else
+              echo "⏭️  SignSimple — no changes, skipping"
+            fi
+
+            docker image prune -f
+
+            # Any cutover that dropped requests = deploy is live but not
+            # zero-downtime. Fail loudly so the regression can't hide.
+            if [ "${ZDT_FAIL:-0}" = 1 ]; then
+              echo "❌ Deploy COMPLETED and the new version is LIVE, but a cutover was"
+              echo "   NOT zero-downtime. Failing the job so this is visible."
+              exit 1
+            fi
+
+            echo "🎉 Deploy complete!"

@@ -1,0 +1,83 @@
+# =============================================================
+# Caddyfile — Auto HTTPS for all Avyangah services
+# Replaces nginx.conf + nginx-docsign.conf + SSL certs
+# Caddy auto-provisions Let's Encrypt certificates. Zero config.
+# =============================================================
+
+# --- SignSimple (PDF Document Signing) ---
+{$DOCSIGN_DOMAIN:signsimple.co.uk} {
+	handle /api/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle /admin/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle /accounts/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle /media/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle /static/admin/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle /static/rest_framework/* {
+		reverse_proxy docsign-api-blue:8000
+	}
+	handle {
+		reverse_proxy docsign-frontend-blue:80
+	}
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+	}
+}
+
+# --- Care AI Software ---
+{$CAREAI_DOMAIN:careaisoftware.co.uk} {
+	handle /api/* {
+		reverse_proxy careai-api-blue:8000
+	}
+	handle /docs* {
+		reverse_proxy careai-api-blue:8000
+	}
+	handle {
+		reverse_proxy careai-frontend-blue:80
+	}
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+	}
+}
+
+# --- Mailcow (Webmail + Admin) ---
+# Test: mail.guhya.co.in → later switch to mail.signsimple.co.uk
+{$MAIL_DOMAIN:mail.guhya.co.in} {
+	reverse_proxy nginx-mailcow:8080 {
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Frame-Options "SAMEORIGIN"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+}
+
+# Autodiscover/Autoconfig for email clients (Outlook, Thunderbird)
+autoconfig.{$MAIL_TEST_DOMAIN:guhya.co.in},
+autodiscover.{$MAIL_TEST_DOMAIN:guhya.co.in} {
+	reverse_proxy nginx-mailcow:8080
+}
+
+# --- www redirects ---
+www.{$DOCSIGN_DOMAIN:signsimple.co.uk} {
+	redir https://{$DOCSIGN_DOMAIN:signsimple.co.uk}{uri} permanent
+}
+www.{$CAREAI_DOMAIN:careaisoftware.co.uk} {
+	redir https://{$CAREAI_DOMAIN:careaisoftware.co.uk}{uri} permanent
+}

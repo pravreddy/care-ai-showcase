@@ -1,0 +1,48 @@
+# =============================================================
+# Caddyfile — Auto HTTPS for both apps
+# Replaces: nginx.conf + nginx-docsign.conf + certbot + SSL certs
+# Caddy handles everything: HTTPS, Let's Encrypt, renewal, HTTP→HTTPS
+# =============================================================
+
+# --- CareAI Software ---
+careaisoftware.co.uk, www.careaisoftware.co.uk {
+	# API → FastAPI backend
+	handle /api/* {
+		reverse_proxy careai-api:8000
+	}
+
+	# Everything else → React frontend
+	handle {
+		reverse_proxy careai-frontend:80
+	}
+}
+
+# --- SignSimple ---
+signsimple.co.uk, www.signsimple.co.uk {
+	# API + Admin + Auth → Django backend
+	handle /api/* {
+		reverse_proxy signsimple-api:8000
+	}
+	handle /admin/* {
+		reverse_proxy signsimple-api:8000
+	}
+	handle /accounts/* {
+		reverse_proxy signsimple-api:8000
+	}
+	handle /media/* {
+		reverse_proxy signsimple-api:8000
+	}
+
+	# Static files (Django collectstatic)
+	handle /static/admin/* {
+		reverse_proxy signsimple-api:8000
+	}
+	handle /static/rest_framework/* {
+		reverse_proxy signsimple-api:8000
+	}
+
+	# Everything else → React frontend
+	handle {
+		reverse_proxy signsimple-frontend:80
+	}
+}

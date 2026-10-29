@@ -1,0 +1,110 @@
+# =============================================================
+# SignSimple (DocSign UK) — Production Services
+# =============================================================
+# Run: docker compose -f docker-compose.yml -f docker-compose.docsign.yml up -d
+# Domain: signsimple.co.uk
+# =============================================================
+
+services:
+
+  docsign-api-blue:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-api-blue
+    restart: unless-stopped
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py setup_site --domain ${DOCSIGN_DOMAIN:-signsimple.co.uk} --name 'SignSimple' &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file:
+      - .env.docsign
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=docsign_uk
+      - DB_USER=careai
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      # Map entire /app/media to NVMe so all uploads, signatures,
+      # signed PDFs, and invoices persist across deploys
+      - /mnt/nvme_data/docsign/media:/app/media
+      - /mnt/nvme_data/docsign/static:/app/staticfiles
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - careai-net
+
+  docsign-api-green:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-api-green
+    restart: "no"
+    profiles: ["docsign-green"]
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
+    env_file:
+      - .env.docsign
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=docsign_uk
+      - DB_USER=careai
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - /mnt/nvme_data/docsign/media:/app/media
+      - /mnt/nvme_data/docsign/static:/app/staticfiles
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - careai-net
+
+  docsign-celery:
+    image: ghcr.io/${GITHUB_USER}/docsign-api:latest
+    container_name: docsign-celery
+    restart: unless-stopped
+    command: celery -A core worker --loglevel=info --concurrency=2
+    env_file:
+      - .env.docsign
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=docsign_uk
+      - DB_USER=careai
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - /mnt/nvme_data/docsign/media:/app/media
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks:
+      - careai-net
+
+  docsign-frontend-blue:
+    image: ghcr.io/${GITHUB_USER}/docsign-frontend:latest
+    container_name: docsign-frontend-blue
+    restart: unless-stopped
+    networks:
+      - careai-net
+
+  docsign-frontend-green:
+    image: ghcr.io/${GITHUB_USER}/docsign-frontend:latest
+    container_name: docsign-frontend-green
+    restart: "no"
+    profiles: ["docsign-green"]
+    networks:
+      - careai-net
+
+  # Extend nginx: mount DocSign config + active switch file
+  nginx:
+    volumes:
+      - ./nginx-docsign.conf:/etc/nginx/conf.d/docsign.conf:ro
+      - ./active_docsign.conf:/etc/nginx/active_docsign.conf:ro

@@ -1,0 +1,60 @@
+# ============================================================
+# Care AI Engine - Python Dependencies (Production)
+# ============================================================
+
+# --- CPU-only PyTorch (MUST be first) ---
+# Without this, openai-whisper pulls full GPU PyTorch (~2.2GB).
+# CPU-only is ~200MB and is all we need on a VPS with no GPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# --- Web Framework ---
+# SECURITY: fastapi 0.115.6 -> 0.137.2 so it allows a patched starlette
+# (>=1.3.1), which clears the starlette CVEs (DoS / multipart / redirect).
+# Verified to resolve cleanly and keep pydantic 2.10.3. TEST after upgrading.
+fastapi==0.137.2
+uvicorn[standard]==0.34.0
+python-multipart==0.0.32  # SECURITY: was 0.0.20 (multiple DoS / parameter-smuggling CVEs)
+
+# --- Database ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# --- HTML Parsing (for MCP NHS server) ---
+beautifulsoup4==4.12.3
+
+# --- HTTP Client (for MCP NHS server + LLM) ---
+httpx==0.28.1
+requests==2.33.0  # SECURITY: was 2.32.3 (CVE-2024-47081, CVE-2026-25645)
+
+# --- Authentication ---
+PyJWT==2.13.0  # SECURITY: was 2.12.1 (multiple JWT CVEs)
+# Use the [bcrypt] extra for passlib and pin a compatible bcrypt version
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# --- OAuth / Social Login ---
+authlib==1.6.12  # SECURITY: was 1.6.9 (PYSEC-2026-25, PYSEC-2026-188)
+itsdangerous==2.2.0
+
+# --- 2FA (TOTP) ---
+pyotp==2.9.0
+segno==1.6.1
+
+# --- Validation ---
+pydantic==2.10.3
+pydantic-settings==2.7.0
+email-validator==2.2.0
+
+# --- Speech-to-Text ---
+openai-whisper==20240930
+
+# --- Redis (caching & rate limiting) ---
+redis[hiredis]==5.2.1
+
+# --- Payments ---
+stripe==11.4.1
+
+# --- Logging ---
+python-json-logger==3.2.1
